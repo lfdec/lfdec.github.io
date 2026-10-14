@@ -1,0 +1,80 @@
+name: Publish RBO project page
+
+'on':
+  schedule:
+    - cron: '2-59/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: publish-lfdec-project-page
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out the publishing mirror
+        uses: actions/checkout@v6
+        with:
+          path: mirror
+
+      - name: Check out the RBO project page
+        uses: actions/checkout@v6
+        with:
+          repository: tu-rbo/LfDEC
+          ref: gh-pages
+          path: source
+          persist-credentials: false
+
+      - name: Check whether the source changed
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_commit=$(git -C source rev-parse HEAD)
+          published_commit=$(cat mirror/.rbo-source-commit 2>/dev/null || true)
+          if [ "$source_commit" = "$published_commit" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "The published page already matches the RBO source."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "commit=$source_commit" >> "$GITHUB_OUTPUT"
+
+      - name: Configure GitHub Pages
+        if: steps.source.outputs.changed == 'true'
+        uses: actions/configure-pages@v5
+
+      - name: Upload the RBO page
+        if: steps.source.outputs.changed == 'true'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: source
+
+      - name: Deploy to lfdec.github.io
+        if: steps.source.outputs.changed == 'true'
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Record the successful publication
+        if: steps.source.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rsync -a --delete --exclude=.git --exclude=.github source/ mirror/
+          source_commit=$(git -C source rev-parse HEAD)
+          printf '%s\n' "$source_commit" > mirror/.rbo-source-commit
+          git -C mirror add -A
+          git -C mirror config user.name "$(git -C source log -1 --format=%an)"
+          git -C mirror config user.email "$(git -C source log -1 --format=%ae)"
+          git -C mirror commit -m "Publish project page from tu-rbo/LfDEC@${source_commit:0:7}"
+          git -C mirror push origin HEAD:main
